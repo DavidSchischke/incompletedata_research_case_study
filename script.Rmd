@@ -438,7 +438,7 @@ for (name in names[2:length(names)]){
 
 We plotted the data: 
 
-```{r, fig.height = 12, fig.width = 5}
+```{r, fig.height = 5, fig.width = 12}
 beta_zeros <- list("pmm" = bias_values_b0_pmm, "norm" = bias_values_b0_norm, "midastouch" = bias_values_b0_midastouch, "cart" = bias_values_b0_cart)
 beta_ones <- list("pmm" = bias_values_b1_pmm, "norm" = bias_values_b1_norm, "midastouch" = bias_values_b1_midastouch, "cart" = bias_values_b1_cart)
 
@@ -456,7 +456,7 @@ bias_data <- rbind(beta_zeros_long, beta_ones_long)
 
 ggplot(bias_data, aes(x = task, y = bias)) + 
   geom_boxplot() + 
-  facet_wrap(~method + beta, ncol = 2) +
+  facet_wrap(~beta + method, nrow = 2) +
   theme_minimal() + 
   ggtitle("Bias")
 ```
