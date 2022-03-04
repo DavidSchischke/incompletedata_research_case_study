@@ -14,6 +14,7 @@ library(mice)
 library(VIM)
 library(tidyverse)
 library(ggpubr)
+library(jtools)
 
 set.seed(420)
 
@@ -40,6 +41,7 @@ main <- data %>% slice_head(n = 900)
 #Remaining 100 observations as data from a substudy
 sub <- data %>% slice_tail(n = 100)
 ```
+
 
 
 ```{r}
@@ -145,7 +147,7 @@ Create a data corresponding to scenario (a) in Figure 8.1 by deleting X from the
 
 
 ```{r}
-task_b <- function(main, sub, method = method_, maxit = maxit_, m = m_){
+task_b <- function(main, sub, method = method_, maxit = maxit_, m = m_, pool.syn = F){
   main["X"] <- NA
   
   # Immpute
@@ -157,12 +159,11 @@ task_b <- function(main, sub, method = method_, maxit = maxit_, m = m_){
   
   # Regress
   b_reg <- with(b_imp, lm(Y~X))
-  b_res <- pool.syn(b_reg) # Use pool.syn as we have synthetic data!
+  if (!pool.syn) b_res <- pool(b_reg)
+  else b_res <- pool.syn(b_reg) # Use pool.syn as we have synthetic data!
   b_res_sum <- summary(b_res, conf.int = T)
   
-  ret <- gen_relevant_vals(b_res_sum, b_imp)
-  
-  return(ret)
+  gen_relevant_vals(b_res_sum, b_imp)
 }
 
 task_b(main, sub)
@@ -172,11 +173,32 @@ task_b(main, sub)
 
 Create a data corresponding to scenario (b) by deleting X values from the main study and Y values from the substudy. Multiply impute the missing values of X in the main study. Perform multiply imputed analysis as in (b).
 
-## My suggestion
+> After discussions with Paul and the other group, we decided to go with a more basic imputation strategy. Our initial attempts can be found at the end of thhe script.
 
-> My suggestion: We say that it is impossible to impute properly in this case, and here is why: 
+```{r}
+task_c <- function(main, sub, method = method_, maxit = 10, m = 25){
+  main["X"] <- NA
+  sub["Y"] <- NA
+  
+  c_data <- rbind(main, sub)
+  
+  c_imp <- mice(c_data, method = method_, maxit = maxit, m = m, printFlag = F)
+  c_reg <- with(c_imp, lm(Y~X))
+  c_res <- pool(c_reg)
+  c_res_sum <- summary(c_res, conf.int = T)
+  
+  gen_relevant_vals(c_res_sum, c_imp)
+}
 
-In ![Van Buuren (2013)](https://stefvanbuuren.name/fimd/sec-FCS.html) they say that it is important to be able to estimate the true correlation between the missing variables. Since we have no observations in which both $X$ and $Y$ are observed together, this is basically impossible: 
+task_c(main, sub)
+```
+
+
+## High CIs -> Investigate
+
+> Even though we get the true $\beta_\text{true} \in \text{CI}(\hat\beta)$, we can see that the actual estimate is far off and we have a large CI (i.e. high bias).
+
+In [Van Buuren (2013)](https://stefvanbuuren.name/fimd/sec-FCS.html) the author says that it is important to be able to estimate the true correlation between the missing variables. Since we have no observations in which both $X$ and $Y$ are observed together, this is basically impossible: 
 
 We have 'true' correlations between variables: 
 
@@ -188,28 +210,26 @@ We have 'true' correlations between variables:
 knitr::kable(cor(data))
 ```
 
-We can run simple simulation to shhow that the estimations don't converge for our methods, even for high number of iterations (which is what is suggested by Van Buuren). 
+We can run simple simulation to show that the estimations don't converge for our methods, even for high number of iterations (which is what is suggested by Van Buuren). 
 
 ```{r, fig.width = 8, fig.height=6}
-d_data <- data
-d_data[1:900, "X"] <- NA
-d_data[901:1000, "Y"] <- NA
+c_data_investigate <- data
+c_data_investigate[1:900, "X"] <- NA
+c_data_investigate[901:1000, "Y"] <- NA
 
 # Initial: Hot Deck
 
 step_one_pred <- gen_pred_mat()
 step_one_pred["Y", "W"] <- step_one_pred["X", "W"] <- 1
 
-mice_mod <- mice(d_data, method = "sample", maxit = 1, m = 1, predictorMatrix = step_one_pred)
-
 maxit <- c(1, 5, 10, 25, 50, 100, 250)
-methods <- c("pmm", "norm", "midastouch")
+methods <- c("pmm", "norm", "midastouch", "cart")
 
 cor_vals <- beta_1_vals <-  matrix(data = NA, nrow = length(maxit), ncol = length(methods))
 
 for (iter in 1:length(maxit)){
   for (method in 1:length(methods)){
-    imputed <- mice(d_data, method = methods[method], m = 5, maxit = maxit[iter], print = F)
+    imputed <- mice(c_data_investigate, method = methods[method], m = 25, maxit = maxit[iter], print = F)
     cor_x_y <- unlist(with(imputed, cor(X, Y))$analyses)
     regression <- pool(with(imputed, lm(Y~X)))
     cor_vals[iter, method] <- mean(cor_x_y)
@@ -234,28 +254,247 @@ true_beta1 <- lm(Y ~ X, data)$coefficients[2] %>% as.numeric()
 cor_plot <- ggplot(data = cor_vals_long, aes(x = maxit, y = value, color = name)) + 
   geom_line(lty = 4) + 
   geom_point() + 
-  geom_hline(yintercept = true_cor, color = "red") +
-  theme_minimal() +
+  geom_hline(aes(yintercept = true_cor, color = "true value")) +
   ylab("cor(X,Y)") +
   xlab("Maximum number of iterations") + 
-  ggtitle("Correlation (X,Y)")
+  ggtitle("Correlation (X,Y)") +
+  theme_minimal()
 
 reg_plot <- ggplot(data = reg_vals_long, aes(x = maxit, y = value, color = name)) + 
   geom_line(lty = 4) + 
   geom_point() + 
-  geom_hline(yintercept = true_beta1, color = "red") +
+  geom_hline(aes(yintercept = true_beta1, color = "true value")) +
   theme_minimal() +
   ylab("beta1") +
   xlab("Maximum number of iterations") +
-  ggtitle("Regression weight beta1")
+  ggtitle("Regression weight beta1") + 
+  theme_minimal()
 
 ggarrange(cor_plot, reg_plot, ncol = 1)
 ```
 
-We can then say that we tried a lot of different methods including sequential regression and then skip ahead to the analysis graphics below.
+# task d)
+
+Create a data corresponding to scenario (c) by deleting X on the main study, Y from the first 50 subjects in the substudy and W from the last 50 subjects. Perform multiply imputed analysis as in (b).
+
+## First idea: Simply impute
+
+Since we have some observations for each variable combination ($(X,Y), (Y,W), (X,W)$), we should be able to get good results through basic imputation.
+
+```{r}
+task_d_basic <- function(main, sub, method = method_, maxit = maxit_, m = m_){
+  main["X"] <- NA
+  sub[1:50, "Y"] <- NA
+  sub[51:100, "W"] <- NA
+  
+  d_data <- rbind(main, sub)
+  
+  d_imp <- mice(d_data, print = F, maxit = maxit, m = m, method = method) 
+  plot(d_imp)
+  
+  d_reg <- with(d_imp, lm(Y ~ X))
+  d_res <- pool(d_reg)
+  d_res_sum <- summary(d_res, conf.int = T)
+  
+  ret <- gen_relevant_vals(d_res_sum, d_imp)
+  
+  return(ret)
+}
+
+task_d_basic(main, sub)
+```
+
+## Another idea: Sequentially complete sub, then main
+
+Similar to what we first tried in C: First impute the missing values in sub, then impute the missing values in main. Steps: 
+
+1. Use $n=900$ Y from main to impute $n = 50$ W in sub (and replace NAs with predicted $W$ values)
+2. Use W and X to impute $n = 50$ Y in sub and
+3. Use both to impute $n = 900$ X in main
+
+```{r}
+task_d_sequential <- function(main, sub, method = method_, maxit = maxit_, m = m_){
+  main["X"] <- NA
+  sub[1:50, "Y"] <- NA
+  sub[51:100, "W"] <- NA
+  
+  d_data <- rbind(main, sub)
+  
+  # First step: Impute W based on Y
+  pred_map_step_one <- gen_pred_mat()
+  pred_map_step_one["W", "Y"] <- 1
+  
+  step_one <- mice(d_data, method = method_, m = m_, predictorMatrix = pred_map_step_one, maxit = maxit_, printFlag = F)
+
+  d_data$W <- complete(step_one)$W
+  
+  # Second step: Impute Y based on W, X
+  pred_map_step_two <- gen_pred_mat()
+  pred_map_step_two["Y", "W"] <- pred_map_step_two["Y", "X"] <- 1
+  
+  step_two <- mice(d_data, method = method, m = m, maxit = maxit, printFlag = F)
+  d_data$Y <- complete(step_two)$Y
+  
+  # Third step: Impute X based on W, Y
+  pred_map_step_three <- gen_pred_mat()
+  pred_map_step_three["X", "Y"] <- pred_map_step_three["X", "W"] <- 1
+  
+  step_three <- mice(d_data, method = method,m = m, maxit = maxit, printFlag = F)
+  d_data$X <- complete(step_three)$X
+  
+  d_reg <- with(step_three, lm(Y ~ X))
+  d_res <- pool(d_reg)
+  d_res_sum <- summary(d_res, conf.int = T)
+  
+  gen_relevant_vals(d_res_sum, step_three)
+}
+
+task_d_sequential(main, sub)
+```
+
+# task e)
+
+Generate new samples and repeat the process (a) to (d), 250 times.
+
+```{r}
+n <- 2
+names <- c("a", "b", "c", "d_1", "d_2")
+methods <- c("pmm", "norm", "midastouch", "cart")
+
+values <- vector(mode = "list", length = length(methods))
+names(values) <- methods
+
+inner_list <- vector(mode = "list", length = length(names))
+names(inner_list) <- names
+
+for (method in methods){
+  values[[method]] <- inner_list
+}
+
+for (i in 1:n){
+  if(i %% 1 == 0){
+    print(sprintf("Run %d", i))
+  }
+  
+  set.seed(i)
+  data <- mvrnorm(1000, avg, vcm) %>% data.frame()
+  colnames(data) <- c("X", "Y", "W")
+  for (method in methods){
+    print(method)
+    values[[method]]$a[[i]] <- task_a(main, sub)
+    values[[method]]$b[[i]] <- task_b(main, sub, method = method)
+    values[[method]]$c[[i]] <- task_c(main, sub, method = method)
+    values[[method]]$d_1[[i]] <- task_d_basic(main, sub, method = method)
+    values[[method]]$d_2[[i]] <- task_d_sequential(main, sub, method = method)
+  }
+}
+```
+
+# task f)
+
+Compare the bias and mean square properties of the estimates of $\beta_0$, $\beta_1$ and $\sigma^2$.
+
+* **TO DO**: Mean square properties! (No idea yet)
+
+* Bias: 
+
+$$\frac{\text{est}-\text{true}}{\text{true}}$$
+
+```{r}
+bias <- function(est, true){
+  return((est - true) / true)
+}
+
+bias_values_b0_pmm <- bias_values_b1_pmm <-
+  bias_values_b0_norm <- bias_values_b1_norm <- 
+  bias_values_b0_midastouch <- bias_values_b1_midastouch <-
+  bias_values_b0_cart <- bias_values_b1_cart <- 
+  setNames(
+    data.frame(matrix(ncol = length(names)-1, nrow = n)),
+    names[2:length(names)])
+
+bias_values_b0_pmm$method <- bias_values_b1_pmm$method <- "pmm"
+bias_values_b0_norm$method <- bias_values_b1_norm$method <- "norm"
+bias_values_b0_midastouch$method <- bias_values_b1_midastouch$method <- "midastouch"
+bias_values_b0_cart$method <- bias_values_b1_cart$method <- "cart"
+
+for (name in names[2:length(names)]){
+  for (i in 1:n){
+    
+    bias_values_b0_pmm[i, name] <- bias(values$pmm[[name]][[i]]$beta_0, values$pmm[["a"]][[i]]$beta_0)
+    bias_values_b1_pmm[i, name] <- bias(values$pmm[[name]][[i]]$beta_1, values$pmm[["a"]][[i]]$beta_1)
+    
+    bias_values_b0_norm[i, name] <- bias(values$norm[[name]][[i]]$beta_0, values$norm[["a"]][[i]]$beta_0)
+    bias_values_b1_norm[i, name] <- bias(values$norm[[name]][[i]]$beta_1, values$norm[["a"]][[i]]$beta_1)
+    
+    bias_values_b0_midastouch[i, name] <- bias(values$midastouch[[name]][[i]]$beta_0, values$midastouch[["a"]][[i]]$beta_0)
+    bias_values_b1_midastouch[i, name] <- bias(values$midastouch[[name]][[i]]$beta_1, values$midastouch[["a"]][[i]]$beta_1)
+    
+    bias_values_b0_cart[i, name] <- bias(values$cart[[name]][[i]]$beta_0, values$cart[["a"]][[i]]$beta_0)
+    bias_values_b1_cart[i, name] <- bias(values$cart[[name]][[i]]$beta_1, values$cart[["a"]][[i]]$beta_1)
+  }
+}
+```
+
+We plotted the data: 
+
+```{r, fig.height = 12, fig.width = 5}
+beta_zeros <- list("pmm" = bias_values_b0_pmm, "norm" = bias_values_b0_norm, "midastouch" = bias_values_b0_midastouch, "cart" = bias_values_b0_cart)
+beta_ones <- list("pmm" = bias_values_b1_pmm, "norm" = bias_values_b1_norm, "midastouch" = bias_values_b1_midastouch, "cart" = bias_values_b1_cart)
+
+beta_zeros_long <- beta_ones_long <- setNames(data.frame(matrix(ncol=3, nrow=0)), c("method", "task", "bias"))
+
+for (i in names(beta_zeros)){
+  beta_zeros_long <- rbind(beta_zeros_long, pivot_longer(beta_zeros[[i]], -method, names_to = "task", values_to = "bias"))
+  beta_ones_long <- rbind(beta_ones_long, pivot_longer(beta_ones[[i]], -method, names_to = "task", values_to = "bias"))
+}
+
+beta_zeros_long$beta <- "beta0"
+beta_ones_long$beta <- "beta1"
+
+bias_data <- rbind(beta_zeros_long, beta_ones_long)
+
+ggplot(bias_data, aes(x = task, y = bias)) + 
+  geom_boxplot() + 
+  facet_wrap(~method + beta, ncol = 2) +
+  theme_minimal() + 
+  ggtitle("Bias")
+```
+
+# task g)
+
+Compute the true value of $\beta_1$ and calculate the actual coverage rate for each method of estimating the confidence interval. Also, calculate the length of the confidence intervals.
+
+* Coverage: Whether true value is within CI of our estimate
 
 
-> We tried a lot of things here. 
+```{r}
+coverage <- function(CI, true){
+  return(as.numeric(CI[1] <= true & true <= CI[2]))
+}
+
+coverage_values <- data.frame(matrix(ncol = length(names)-1, nrow = n)) 
+colnames(coverage_values) <- names[2:length(names)]
+
+for (name in names[2:length(names)]){
+  for (i in 1:n){
+    coverage_values[i, name] <- coverage(values[[name]][[i]]$beta_1_confint, values[["a"]][[i]]$beta_1)
+  }
+}
+
+coverage_values$index <- 1:n
+coverage_long <- pivot_longer(coverage_values, cols = -c(index))
+
+ggplot(data = coverage_long, aes(x = name, y = value/n)) +
+  geom_bar(stat = "identity") + 
+  xlab("method") +
+  ylab("Density") + 
+  theme_minimal()
+```
+
+# Additional research for c)
+
+We initially had a lot of problems with coverage for task c and tried various methods. Here's what we came up with, but decided to exclude after our discussions with Paul and the other group. 
 
 ## First Try: Basic imputation strategy
 
@@ -281,7 +520,7 @@ task_c_basic <- function(main, sub, method = method_, maxit = maxit_, m = m_, ex
   plot(c_imp)
   
   c_reg <- with(c_imp, lm(Y ~ X))
-  c_res <- pool.syn(c_reg)
+  c_res <- pool(c_reg)
   c_res_sum <- summary(c_res, conf.int = T)
   
   ret <- gen_relevant_vals(c_res_sum, c_imp)
@@ -375,193 +614,3 @@ https://academic.oup.com/aje/article/172/9/1070/148540 uses sequential regressio
 ```{r}
 task_c_basic(main, sub, method = "cart")
 ```
-
-# task d)
-
-Create a data corresponding to scenario (c) by deleting X on the main study, Y from the first 50 subjects in the substudy and W from the last 50 subjects. Perform multiply imputed analysis as in (b).
-
-## First idea: Simply impute
-
-Since we have some observations for each variable combination ($(X,Y), (Y,W), (X,W)$), we should be able to get good results through basic imputation.
-
-```{r}
-task_d_basic <- function(main, sub, method = method_, maxit = maxit_, m = m_){
-  main["X"] <- NA
-  sub[1:50, "Y"] <- NA
-  sub[51:100, "W"] <- NA
-  
-  d_data <- rbind(main, sub)
-  
-  d_imp <- mice(d_data, print = F, maxit = maxit, m = m, method = method) 
-  plot(d_imp)
-  
-  d_reg <- with(d_imp, lm(Y ~ X))
-  d_res <- pool.syn(d_reg)
-  d_res_sum <- summary(d_res, conf.int = T)
-  
-  ret <- gen_relevant_vals(d_res_sum, d_imp)
-  
-  return(ret)
-}
-
-task_d_basic(main, sub)
-```
-
-## Another idea: Sequentially complete sub, then main
-
-Similar to what we did in C: First impute the missing values in sub, then impute the missing values in main. Steps: 
-
-1. Use $n=900$ Y from main to impute $n = 50$ W in sub
-2. Use W to impute $n = 50$ Y in sub and $n = 100$ X 
-3. Use both to impute $n = 900$ X in main
-
-```{r}
-task_d_sequential <- function(main, sub, method = method_, maxit = maxit_, m = m_){
-  main["X"] <- NA
-  sub[1:50, "Y"] <- NA
-  sub[51:100, "W"] <- NA
-  
-  d_data <- rbind(main, sub)
-  
-  # First step: Impute W based on Y
-  pred_map_step_one <- gen_pred_mat()
-  pred_map_step_one["W", "Y"] <- 1
-  
-  step_one <- mice(d_data, method = method_, m = m_, predictorMatrix = pred_map_step_one, maxit = maxit_, printFlag = F)
-
-  d_data$W <- complete(step_one)$W
-  
-  # Second step: Impute Y based on W, X
-  pred_map_step_two <- gen_pred_mat()
-  pred_map_step_two["Y", "W"] <- pred_map_step_two["Y", "X"] <- 1
-  
-  step_two <- mice(d_data, method = method, m = m, maxit = maxit, printFlag = F)
-  d_data$Y <- complete(step_two)$Y
-  
-  # Third step: Impute X based on W, Y
-  pred_map_step_three <- gen_pred_mat()
-  pred_map_step_three["X", "Y"] <- pred_map_step_three["X", "W"] <- 1
-  
-  step_three <- mice(d_data, method = method,m = m, maxit = maxit, printFlag = F)
-  d_data$X <- complete(step_three)$X
-  
-  d_reg <- with(step_three, lm(Y ~ X))
-  d_res <- pool.syn(d_reg)
-  d_res_sum <- summary(d_res, conf.int = T)
-  
-  ret <- gen_relevant_vals(d_res_sum, step_three)
-  
-  return(ret)
-}
-
-task_d_sequential(main, sub)
-```
-
-Surprisingly, this actually leads to way worse results.
-
-# task e)
-
-Generate new samples and repeat the process (a) to (d), 250 times.
-
-```{r}
-n <- 250
-names <- c("a", "b", "c_1", "c_2", "c_3", "d_1", "d_2")
-
-values <- vector(mode = "list", length = length(names))
-names(values) <- names
-
-for (i in 1:n){
-  print(sprintf("Run %d", i))
-  set.seed(i)
-  
-  data <- mvrnorm(1000, avg, vcm) %>% data.frame()
-  colnames(data) <- c("X", "Y", "W")
-  
-  values$a[[i]]   <- task_a(main, sub)
-  values$b[[i]]   <- task_b(main, sub)
-  values$c_1[[i]] <- task_c_basic(main, sub)
-  values$c_2[[i]] <- task_c_sequential(main, sub, print = F)
-  values$c_3[[i]] <- task_c_basic(main, sub, method = "cart")
-  values$d_1[[i]] <- task_d_basic(main, sub)
-  values$d_2[[i]] <- task_d_sequential(main, sub)
-}
-```
-
-# task f)
-
-Compare the bias and mean square properties of the estimates of $\beta_0$, $\beta_1$ and $\sigma^2$.
-
-* **TO DO**: Mean square properties! (No idea yet)
-
-* Bias: 
-
-$$\frac{\text{est}-\text{true}}{\text{true}}$$
-
-```{r}
-bias <- function(est, true){
-  return((est - true) / true)
-}
-
-bias_values_b0 <- bias_values_b1 <- data.frame(matrix(ncol = length(names)-1, nrow = n)) 
-colnames(bias_values_b0) <- colnames(bias_values_b1) <- names[2:length(names)]
-
-for (name in names[2:length(names)]){
-  for (i in 1:n){
-    bias_values_b0[i, name] <- bias(values[[name]][[i]]$beta_0, values[["a"]][[i]]$beta_0)
-    bias_values_b1[i, name] <- bias(values[[name]][[i]]$beta_1, values[["a"]][[i]]$beta_1)
-  }
-}
-```
-
-We plotted the data: 
-
-```{r}
-bias_values_b0$beta <- "beta0"
-bias_values_b1$beta <- "beta1"
-
-bias_b0_long <- pivot_longer(bias_values_b0, cols = -c(beta))
-bias_b1_long <- pivot_longer(bias_values_b1, cols = -c(beta))
-
-bias_data <- rbind(bias_b0_long, bias_b1_long)
-
-ggplot(bias_data, aes(x = name, y = value)) + 
-  geom_boxplot() + 
-  facet_wrap(~beta) +
-  theme_minimal() + 
-  ggtitle("Bias")
-```
-
-
-# task g)
-
-* **TO DO**: We need to figure out whether we correctly computed the true value!
-
-Compute the true value of $\beta_1$ and calculate the actual coverage rate for each method of estimating the confidence interval. Also, calculate the length of the confidence intervals.
-
-* Coverage: Whether true value is within CI of our estimate
-
-
-```{r}
-coverage <- function(CI, true){
-  return(as.numeric(CI[1] <= true & true <= CI[2]))
-}
-
-coverage_values <- data.frame(matrix(ncol = length(names)-1, nrow = n)) 
-colnames(coverage_values) <- names[2:length(names)]
-
-for (name in names[2:length(names)]){
-  for (i in 1:n){
-    coverage_values[i, name] <- coverage(values[[name]][[i]]$beta_1_confint, values[["a"]][[i]]$beta_1)
-  }
-}
-
-coverage_values$index <- 1:n
-coverage_long <- pivot_longer(coverage_values, cols = -c(index))
-
-ggplot(data = coverage_long, aes(x = name, y = value/n)) +
-  geom_bar(stat = "identity") + 
-  xlab("method") +
-  ylab("Density") + 
-  theme_minimal()
-```
-
