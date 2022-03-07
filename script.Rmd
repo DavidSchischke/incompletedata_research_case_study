@@ -14,11 +14,10 @@ library(mice)
 library(VIM)
 library(tidyverse)
 library(ggpubr)
-library(jtools)
+library(ggsci)
 
 set.seed(420)
 
-n <- 1000
 avg <- seq(0,2)
 vcm <- matrix(data = c(1,1,1.7,1,2, 1.5, 1.7, 1.5, 4), nrow = 3, byrow = T)
 
@@ -27,7 +26,7 @@ colnames(data) <- c("X", "Y", "W")
 
 maxit_ <- 20 
 m_ <- 5
-method_ <- "pmm" # Use midas touch as it is best for small donor pools
+method_ <- "pmm" 
 ```
 
 # task a)
@@ -54,17 +53,16 @@ task_a <- function(main, sub){
   beta_1_main <- main.lm$coef[2,1]
   beta_1_sigma <- main.lm$coef[2,2]
   sigma_main <- main.lm$sigma
+  mse <- mean(main.lm$residuals^2)
   
   int_est_beta_1 <- confint(lm(Y~X, data =main))[2,]
   
-  ret <- list("beta_0" = beta_0_main,
-              "beta_0_simga" = beta_0_sigma,
-              "beta_1" = beta_1_main,
-              "beta_1_sigma" = beta_1_sigma,
-              "beta_1_confint" = as.numeric(int_est_beta_1),
-              "sigma" = sigma_main)
-  
-  return(ret)
+  list("beta_0" = beta_0_main,
+       "beta_0_simga" = beta_0_sigma,
+       "beta_1" = beta_1_main,
+       "beta_1_sigma" = beta_1_sigma,
+       "beta_1_confint" = as.numeric(int_est_beta_1),
+       "sigma" = sigma_main)
 }
 
 task_a(main, sub)
@@ -103,18 +101,17 @@ MI_analysis <- function(Q_hat, U_hat, m) {
   CIupper <- q_bar + qt(0.975, df) * sigma
   r <- (B + B / m) / u_bar
   
-  return(list("sigma" = sigma, "squared" = sigma_sq, "CIl" = CIlow,  "CIu" = CIupper))
+  list("sigma" = sigma, "squared" = sigma_sq, "CIl" = CIlow,  "CIu" = CIupper)
 }
 
-get_pred_var <- function(mids){
+get_pred_var <- function(mids, n = 1000){
+  
   mids_complete <- complete(mids, action = "long", include = F)
   
-  theta_b <- aggregate(Y ~ .imp, data = mids_complete, mean)$Y
-  var_b <- aggregate(Y ~ .imp, data = mids_complete, var)$Y / n
+  theta_b <- aggregate(Y ~ .imp, data = mids_complete, "mean")$Y
+  var_b <- aggregate(Y ~ .imp, data = mids_complete, "var")$Y/n
   
-  analysis <- MI_analysis(theta_b, var_b, mids$m)
-  
-  return(analysis)
+  MI_analysis(theta_b, var_b, mids$m)
 }
 
 # Helper functions
@@ -123,19 +120,17 @@ gen_pred_mat <- function(){
   pred_mat <- matrix(rep(0, 9), ncol = 3)
   rownames(pred_mat) <- colnames(pred_mat) <- c("X", "Y", "W")
   
-  return(pred_mat)
+  pred_mat
 }
 
 gen_relevant_vals <- function(summary, mids){
   
-  ret <- list("beta_0" = summary$estimate[1],
-              "beta_0_sigma" = summary$std.error[1],
-              "beta_1" = summary$estimate[2],
-              "beta_1_sigma" = summary$std.error[2],
-              "beta_1_confint" = c(summary$`2.5 %`[2], summary$`97.5 %`[2]),
-              "sigma" = get_pred_var(mids))
-  
-  return(ret)
+  list("beta_0" = summary$estimate[1],
+       "beta_0_sigma" = summary$std.error[1],
+       "beta_1" = summary$estimate[2],
+       "beta_1_sigma" = summary$std.error[2],
+       "beta_1_confint" = c(summary$`2.5 %`[2], summary$`97.5 %`[2]),
+       "sigma" = get_pred_var(mids))
 }
 ```
 
@@ -147,7 +142,7 @@ Create a data corresponding to scenario (a) in Figure 8.1 by deleting X from the
 
 
 ```{r}
-task_b <- function(main, sub, method = method_, maxit = maxit_, m = m_, pool.syn = F){
+task_b <- function(main, sub, orig.data = data, method = method_, maxit = maxit_, m = m_, pool.syn = F){
   main["X"] <- NA
   
   # Immpute
@@ -169,6 +164,13 @@ task_b <- function(main, sub, method = method_, maxit = maxit_, m = m_, pool.syn
 task_b(main, sub)
 ```
 
+Note that the CI gets substantially smaller when using the `pool.syn()` function, that is supposed to be used for synthetic data according to the `mice` documentation: 
+
+```{r}
+task_b(main, sub, pool.syn = T)
+```
+
+
 # task c)
 
 Create a data corresponding to scenario (b) by deleting X values from the main study and Y values from the substudy. Multiply impute the missing values of X in the main study. Perform multiply imputed analysis as in (b).
@@ -176,15 +178,16 @@ Create a data corresponding to scenario (b) by deleting X values from the main s
 > After discussions with Paul and the other group, we decided to go with a more basic imputation strategy. Our initial attempts can be found at the end of thhe script.
 
 ```{r}
-task_c <- function(main, sub, method = method_, maxit = 10, m = 25){
+task_c <- function(main, sub, orig.data = data, method = method_, maxit = 10, m = 25, pool.syn = F){
   main["X"] <- NA
   sub["Y"] <- NA
   
   c_data <- rbind(main, sub)
   
-  c_imp <- mice(c_data, method = method_, maxit = maxit, m = m, printFlag = F)
+  c_imp <- mice(c_data, method = method, maxit = maxit, m = m, printFlag = F)
   c_reg <- with(c_imp, lm(Y~X))
-  c_res <- pool(c_reg)
+  if(!pool.syn) c_res <- pool(c_reg)
+  else c_res <- pool.syn(c_reg)
   c_res_sum <- summary(c_res, conf.int = T)
   
   gen_relevant_vals(c_res_sum, c_imp)
@@ -193,10 +196,16 @@ task_c <- function(main, sub, method = method_, maxit = 10, m = 25){
 task_c(main, sub)
 ```
 
-
 ## High CIs -> Investigate
 
 > Even though we get the true $\beta_\text{true} \in \text{CI}(\hat\beta)$, we can see that the actual estimate is far off and we have a large CI (i.e. high bias).
+
+Note that this changes if we use the `pool.syn()` function - this leads to a substantial decrease in the CI size, but also decreases the coverage enormously. In out different tests, we were not able to achieve coverage > 10% for task C.
+
+```{r}
+task_c(main, sub, pool.syn = T)
+```
+
 
 In [Van Buuren (2013)](https://stefvanbuuren.name/fimd/sec-FCS.html) the author says that it is important to be able to estimate the true correlation between the missing variables. Since we have no observations in which both $X$ and $Y$ are observed together, this is basically impossible: 
 
@@ -219,16 +228,15 @@ c_data_investigate[901:1000, "Y"] <- NA
 
 # Initial: Hot Deck
 
-step_one_pred <- gen_pred_mat()
-step_one_pred["Y", "W"] <- step_one_pred["X", "W"] <- 1
-
 maxit <- c(1, 5, 10, 25, 50, 100, 250)
 methods <- c("pmm", "norm", "midastouch", "cart")
 
 cor_vals <- beta_1_vals <-  matrix(data = NA, nrow = length(maxit), ncol = length(methods))
 
 for (iter in 1:length(maxit)){
+  print(iter)
   for (method in 1:length(methods)){
+    print(methods[method])
     imputed <- mice(c_data_investigate, method = methods[method], m = 25, maxit = maxit[iter], print = F)
     cor_x_y <- unlist(with(imputed, cor(X, Y))$analyses)
     regression <- pool(with(imputed, lm(Y~X)))
@@ -252,26 +260,29 @@ true_cor <- cor(data$X, data$Y)
 true_beta1 <- lm(Y ~ X, data)$coefficients[2] %>% as.numeric()
 
 cor_plot <- ggplot(data = cor_vals_long, aes(x = maxit, y = value, color = name)) + 
-  geom_line(lty = 4) + 
-  geom_point() + 
+  geom_line(lty = 4, lwd = 0.7) + 
+  geom_point(size = 3) + 
   geom_hline(aes(yintercept = true_cor, color = "true value")) +
   ylab("cor(X,Y)") +
   xlab("Maximum number of iterations") + 
   ggtitle("Correlation (X,Y)") +
-  theme_minimal()
+  theme_minimal() +
+  scale_color_tron()
 
 reg_plot <- ggplot(data = reg_vals_long, aes(x = maxit, y = value, color = name)) + 
-  geom_line(lty = 4) + 
-  geom_point() + 
+  geom_line(lty = 4, lwd = 0.7) + 
+  geom_point(size = 3) + 
   geom_hline(aes(yintercept = true_beta1, color = "true value")) +
   theme_minimal() +
   ylab("beta1") +
   xlab("Maximum number of iterations") +
   ggtitle("Regression weight beta1") + 
-  theme_minimal()
+  theme_minimal() +
+  scale_color_tron()
 
 ggarrange(cor_plot, reg_plot, ncol = 1)
 ```
+
 
 # task d)
 
@@ -282,7 +293,7 @@ Create a data corresponding to scenario (c) by deleting X on the main study, Y f
 Since we have some observations for each variable combination ($(X,Y), (Y,W), (X,W)$), we should be able to get good results through basic imputation.
 
 ```{r}
-task_d_basic <- function(main, sub, method = method_, maxit = maxit_, m = m_){
+task_d_basic <- function(main, sub, orig.data = data, method = method_, maxit = maxit_, m = m_, pool.syn = F){
   main["X"] <- NA
   sub[1:50, "Y"] <- NA
   sub[51:100, "W"] <- NA
@@ -290,19 +301,24 @@ task_d_basic <- function(main, sub, method = method_, maxit = maxit_, m = m_){
   d_data <- rbind(main, sub)
   
   d_imp <- mice(d_data, print = F, maxit = maxit, m = m, method = method) 
-  plot(d_imp)
   
   d_reg <- with(d_imp, lm(Y ~ X))
-  d_res <- pool(d_reg)
+  if(!pool.syn) d_res <- pool(d_reg)
+  else d_res <- pool.syn(d_reg)
   d_res_sum <- summary(d_res, conf.int = T)
   
-  ret <- gen_relevant_vals(d_res_sum, d_imp)
-  
-  return(ret)
+  gen_relevant_vals(d_res_sum, d_imp)
 }
 
 task_d_basic(main, sub)
 ```
+
+Again, the CI reduces in size substantially when using `pool.syn()`, but since the imputation is good, the coverage rate is not affected too strongly.
+
+```{r}
+task_d_basic(main, sub, pool.syn = T)
+```
+
 
 ## Another idea: Sequentially complete sub, then main
 
@@ -313,7 +329,7 @@ Similar to what we first tried in C: First impute the missing values in sub, the
 3. Use both to impute $n = 900$ X in main
 
 ```{r}
-task_d_sequential <- function(main, sub, method = method_, maxit = maxit_, m = m_){
+task_d_sequential <- function(main, sub, orig.data = data, method = method_, maxit = maxit_, m = m_, pool.syn = F){
   main["X"] <- NA
   sub[1:50, "Y"] <- NA
   sub[51:100, "W"] <- NA
@@ -343,7 +359,8 @@ task_d_sequential <- function(main, sub, method = method_, maxit = maxit_, m = m
   d_data$X <- complete(step_three)$X
   
   d_reg <- with(step_three, lm(Y ~ X))
-  d_res <- pool(d_reg)
+  if (!pool.syn) d_res <- pool(d_reg)
+  else d_res <- pool.syn(d_reg)
   d_res_sum <- summary(d_res, conf.int = T)
   
   gen_relevant_vals(d_res_sum, step_three)
@@ -352,12 +369,18 @@ task_d_sequential <- function(main, sub, method = method_, maxit = maxit_, m = m
 task_d_sequential(main, sub)
 ```
 
+Here, we observe a similar effect of `pool.syn()`.
+
+```{r}
+task_d_sequential(main, sub, pool.syn = T)
+```
+
 # task e)
 
 Generate new samples and repeat the process (a) to (d), 250 times.
 
 ```{r}
-n <- 2
+n <- 250
 names <- c("a", "b", "c", "d_1", "d_2")
 methods <- c("pmm", "norm", "midastouch", "cart")
 
@@ -372,15 +395,16 @@ for (method in methods){
 }
 
 for (i in 1:n){
-  if(i %% 1 == 0){
-    print(sprintf("Run %d", i))
-  }
+  print(sprintf("Run %d", i))
   
   set.seed(i)
   data <- mvrnorm(1000, avg, vcm) %>% data.frame()
   colnames(data) <- c("X", "Y", "W")
+  
+  main <- data %>% slice_head(n = 900)
+  sub <- data %>% slice_tail(n = 100)
+  
   for (method in methods){
-    print(method)
     values[[method]]$a[[i]] <- task_a(main, sub)
     values[[method]]$b[[i]] <- task_b(main, sub, method = method)
     values[[method]]$c[[i]] <- task_c(main, sub, method = method)
@@ -394,71 +418,87 @@ for (i in 1:n){
 
 Compare the bias and mean square properties of the estimates of $\beta_0$, $\beta_1$ and $\sigma^2$.
 
-* **TO DO**: Mean square properties! (No idea yet)
-
-* Bias: 
-
-$$\frac{\text{est}-\text{true}}{\text{true}}$$
+* Bias: $\frac{\text{est}-\text{true}}{\text{true}}$
+* MSE of Estimator: $\text{Var}(\hat \theta) + \text{Bias}^2(\hat \theta)$
 
 ```{r}
 bias <- function(est, true){
-  return((est - true) / true)
+  (est - true) / true
 }
 
-bias_values_b0_pmm <- bias_values_b1_pmm <-
-  bias_values_b0_norm <- bias_values_b1_norm <- 
-  bias_values_b0_midastouch <- bias_values_b1_midastouch <-
-  bias_values_b0_cart <- bias_values_b1_cart <- 
+MSE <- function(var, bias){
+  var + bias^2
+}
+
+bias_values_b0_pmm <- bias_values_b1_pmm <- mse_values_b1_pmm <- 
+bias_values_b0_norm <- bias_values_b1_norm <- mse_values_b1_norm <- 
+bias_values_b0_midastouch <- bias_values_b1_midastouch <- mse_values_b1_midastouch <- 
+bias_values_b0_cart <- bias_values_b1_cart <- mse_values_b1_cart <-
   setNames(
     data.frame(matrix(ncol = length(names)-1, nrow = n)),
     names[2:length(names)])
 
-bias_values_b0_pmm$method <- bias_values_b1_pmm$method <- "pmm"
-bias_values_b0_norm$method <- bias_values_b1_norm$method <- "norm"
-bias_values_b0_midastouch$method <- bias_values_b1_midastouch$method <- "midastouch"
-bias_values_b0_cart$method <- bias_values_b1_cart$method <- "cart"
+bias_values_b0_pmm$method <- bias_values_b1_pmm$method <- mse_values_b1_pmm$method <- "pmm"
+bias_values_b0_norm$method <- bias_values_b1_norm$method <- mse_values_b1_norm$method <- "norm"
+bias_values_b0_midastouch$method <- bias_values_b1_midastouch$method <- mse_values_b1_midastouch$method <- "midastouch"
+bias_values_b0_cart$method <- bias_values_b1_cart$method <- mse_values_b1_cart$method <- "cart"
 
 for (name in names[2:length(names)]){
   for (i in 1:n){
     
     bias_values_b0_pmm[i, name] <- bias(values$pmm[[name]][[i]]$beta_0, values$pmm[["a"]][[i]]$beta_0)
     bias_values_b1_pmm[i, name] <- bias(values$pmm[[name]][[i]]$beta_1, values$pmm[["a"]][[i]]$beta_1)
+    mse_values_b1_pmm[i, name] <- MSE(values$pmm[[name]][[i]]$sigma$squared, bias_values_b1_pmm[i, name])
     
     bias_values_b0_norm[i, name] <- bias(values$norm[[name]][[i]]$beta_0, values$norm[["a"]][[i]]$beta_0)
     bias_values_b1_norm[i, name] <- bias(values$norm[[name]][[i]]$beta_1, values$norm[["a"]][[i]]$beta_1)
+    mse_values_b1_norm[i, name] <- MSE(values$norm[[name]][[i]]$sigma$squared, bias_values_b1_norm[i, name])
+    
     
     bias_values_b0_midastouch[i, name] <- bias(values$midastouch[[name]][[i]]$beta_0, values$midastouch[["a"]][[i]]$beta_0)
     bias_values_b1_midastouch[i, name] <- bias(values$midastouch[[name]][[i]]$beta_1, values$midastouch[["a"]][[i]]$beta_1)
-    
+    mse_values_b1_midastouch[i, name] <- MSE(values$midastouch[[name]][[i]]$sigma$squared, bias_values_b1_midastouch[i, name])
+      
     bias_values_b0_cart[i, name] <- bias(values$cart[[name]][[i]]$beta_0, values$cart[["a"]][[i]]$beta_0)
     bias_values_b1_cart[i, name] <- bias(values$cart[[name]][[i]]$beta_1, values$cart[["a"]][[i]]$beta_1)
+    mse_values_b1_cart[i, name] <- MSE(values$cart[[name]][[i]]$sigma$squared, bias_values_b1_cart[i, name])
   }
 }
 ```
 
 We plotted the data: 
 
-```{r, fig.height = 5, fig.width = 12}
+```{r, fig.height = 8.12, fig.width = 7}
 beta_zeros <- list("pmm" = bias_values_b0_pmm, "norm" = bias_values_b0_norm, "midastouch" = bias_values_b0_midastouch, "cart" = bias_values_b0_cart)
 beta_ones <- list("pmm" = bias_values_b1_pmm, "norm" = bias_values_b1_norm, "midastouch" = bias_values_b1_midastouch, "cart" = bias_values_b1_cart)
+mse <- list("pmm" = mse_values_b1_pmm, "norm" = mse_values_b1_norm, "midastouch" = mse_values_b1_midastouch, "cart" = mse_values_b1_cart)
 
-beta_zeros_long <- beta_ones_long <- setNames(data.frame(matrix(ncol=3, nrow=0)), c("method", "task", "bias"))
+beta_zeros_long <- beta_ones_long <- mse_long <- setNames(data.frame(matrix(ncol=3, nrow=0)), c("method", "task", "value"))
 
 for (i in names(beta_zeros)){
-  beta_zeros_long <- rbind(beta_zeros_long, pivot_longer(beta_zeros[[i]], -method, names_to = "task", values_to = "bias"))
-  beta_ones_long <- rbind(beta_ones_long, pivot_longer(beta_ones[[i]], -method, names_to = "task", values_to = "bias"))
+  beta_zeros_long <- rbind(beta_zeros_long, pivot_longer(beta_zeros[[i]], -method, names_to = "task", values_to = "value"))
+  beta_ones_long <- rbind(beta_ones_long, pivot_longer(beta_ones[[i]], -method, names_to = "task", values_to = "value"))
+  mse_long <- rbind(mse_long, pivot_longer(mse[[i]], -method, names_to = "task", values_to = "value"))
 }
 
 beta_zeros_long$beta <- "beta0"
 beta_ones_long$beta <- "beta1"
+mse_long$beta <- "mse"
 
-bias_data <- rbind(beta_zeros_long, beta_ones_long)
+bias_data <- rbind(beta_zeros_long, beta_ones_long, mse_long)
 
-ggplot(bias_data, aes(x = task, y = bias)) + 
+ggplot(bias_data, aes(x = task, y = value, fill = method)) + 
   geom_boxplot() + 
-  facet_wrap(~beta + method, nrow = 2) +
+  facet_wrap(~beta, 
+             ncol = 1, 
+             scales = "free_y", 
+             strip.position = "left", 
+             labeller = as_labeller(c(beta0 = "Bias beta_0", beta1 = "Bias beta_1", mse = "MSE"))) +
+  scale_fill_tron() +
+  xlab("Task") + 
+  ylab(NULL) +
   theme_minimal() + 
-  ggtitle("Bias")
+  theme(strip.placement = "outside",legend.position = "none")
 ```
 
 # task g)
@@ -467,30 +507,85 @@ Compute the true value of $\beta_1$ and calculate the actual coverage rate for e
 
 * Coverage: Whether true value is within CI of our estimate
 
+## Average length of CI
 
 ```{r}
+compute_ci_length <- function(list){
+  
+  CIl_sum <- CIu_sum <- 0
+  
+  for (val in list){
+    CIl_sum <- CIl_sum + val$beta_1_confint[1]
+    CIu_sum <- CIu_sum + val$beta_1_confint[2]
+  }
+  
+  CIl <- CIl_sum / length(list)
+  CIu <- CIu_sum / length(list)
+  
+  round(CIu - CIl, 4)
+}
+
+ci_length <- data.frame(matrix(ncol = length(methods), nrow = length(names)-1))
+colnames(ci_length) <- methods
+rownames(ci_length) <- names[2:length(names)]
+
+for (method in methods){
+  for (task in names[2:length(names)]){
+    ci_length[task, method] <- compute_ci_length(values[[method]][[task]])
+  }
+}
+
+knitr::kable(ci_length)
+```
+
+
+```{r, fig.width = 7, fig.height = 5}
 coverage <- function(CI, true){
   return(as.numeric(CI[1] <= true & true <= CI[2]))
 }
 
-coverage_values <- data.frame(matrix(ncol = length(names)-1, nrow = n)) 
-colnames(coverage_values) <- names[2:length(names)]
+coverage_pmm <- coverage_norm <- coverage_midastouch <- coverage_cart <- 
+  setNames(
+    data.frame(matrix(ncol = length(names)-1, nrow = n)),
+    names[2:length(names)]
+  )
+
+coverage_pmm$method <- "pmm"
+coverage_norm$method <- "norm"
+coverage_midastouch$method <- "midastouch"
+coverage_cart$method <- "cart"
 
 for (name in names[2:length(names)]){
   for (i in 1:n){
-    coverage_values[i, name] <- coverage(values[[name]][[i]]$beta_1_confint, values[["a"]][[i]]$beta_1)
+    
+    coverage_pmm[i, name] <- coverage(values$pmm[[name]][[i]]$beta_1_confint, values$pmm$a[[1]]$beta_1)
+    
+    coverage_norm[i, name] <- coverage(values$norm[[name]][[i]]$beta_1_confint, values$norm$a[[1]]$beta_1)
+    
+    coverage_midastouch[i, name] <- coverage(values$midastouch[[name]][[i]]$beta_1_confint, values$midastouch$a[[1]]$beta_1)
+      
+    coverage_cart[i, name] <- coverage(values$cart[[name]][[i]]$beta_1_confint, values$cart$a[[1]]$beta_1)
   }
 }
 
-coverage_values$index <- 1:n
-coverage_long <- pivot_longer(coverage_values, cols = -c(index))
+coverage_pmm_long <- pivot_longer(coverage_pmm, -method, names_to = "task")
+coverage_norm_long <- pivot_longer(coverage_norm, -method, names_to = "task")
+coverage_midastouch_long <- pivot_longer(coverage_midastouch, -method, names_to = "task")
+coverage_cart_long <- pivot_longer(coverage_cart, -method, names_to = "task")
 
-ggplot(data = coverage_long, aes(x = name, y = value/n)) +
-  geom_bar(stat = "identity") + 
-  xlab("method") +
-  ylab("Density") + 
-  theme_minimal()
+coverage_long <- rbind(coverage_pmm_long, coverage_norm_long, coverage_midastouch_long, coverage_cart_long)
+coverage_plot <- coverage_long %>% group_by(task, method) %>% summarize(Mean = mean(value))
+
+ggplot(data = coverage_plot, aes(x = task, y = Mean, fill = method)) +
+  geom_bar(stat = "identity", position = "dodge") + 
+  xlab("Method") +
+  ylab("Coverage") + 
+  theme_minimal() + 
+  scale_fill_tron() + 
+  ylim(c(0,1)) +
+  theme(legend.position = "bottom")
 ```
+
 
 # Additional research for c)
 
