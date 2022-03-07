@@ -2,7 +2,8 @@
 title: "R Notebook"
 output:
   html_document:
-    df_print: paged
+    toc: true
+    toc_depth: 2
 ---
 
 # Data Generation
@@ -15,6 +16,8 @@ library(VIM)
 library(tidyverse)
 library(ggpubr)
 library(ggsci)
+
+wd <- dirname(rstudioapi::getActiveDocumentContext()$path)
 
 set.seed(420)
 
@@ -138,8 +141,7 @@ gen_relevant_vals <- function(summary, mids){
 
 Create a data corresponding to scenario (a) in Figure 8.1 by deleting X from the main study. Multiply impute the missing values of X in the main study. Perform multiply imputed analysis and again store the point and interval estimates of the same parameters.
 
-![Figure 8.1.](Figure_8.1.jpg)
-
+![Figure 8.1](Figure_8.1.jpg)
 
 ```{r}
 task_b <- function(main, sub, orig.data = data, method = method_, maxit = maxit_, m = m_, pool.syn = F){
@@ -226,13 +228,15 @@ c_data_investigate <- data
 c_data_investigate[1:900, "X"] <- NA
 c_data_investigate[901:1000, "Y"] <- NA
 
-# Initial: Hot Deck
-
 maxit <- c(1, 5, 10, 25, 50, 100, 250)
 methods <- c("pmm", "norm", "midastouch", "cart")
 
 cor_vals <- beta_1_vals <-  matrix(data = NA, nrow = length(maxit), ncol = length(methods))
+```
 
+
+```{r, fig.width = 8, fig.height=6, eval = F}
+# Since knitting would take forever, we just load the data as a .rds file
 for (iter in 1:length(maxit)){
   print(iter)
   for (method in 1:length(methods)){
@@ -244,6 +248,14 @@ for (iter in 1:length(maxit)){
     beta_1_vals[iter, method] <- gen_relevant_vals(summary(regression), imputed)$beta_1
   }
 }
+
+saveRDS(cor_vals, file = sprintf("%s/data_files/correlation_estimation.rds", wd))
+saveRDS(reg_vals, file = sprintf("%s/data_files/regression_estimation.rds", wd))
+```
+
+```{r, fig.width = 7, fig.height = 7}
+cor_vals <- readRDS(sprintf("%s/data_files/correlation_estimation.rds", wd))
+beta_1_vals <- readRDS(sprintf("%s/data_files/regression_estimation.rds", wd))
 
 cor_vals <- data.frame(cor_vals)
 cor_vals$maxit <- maxit
@@ -267,7 +279,8 @@ cor_plot <- ggplot(data = cor_vals_long, aes(x = maxit, y = value, color = name)
   xlab("Maximum number of iterations") + 
   ggtitle("Correlation (X,Y)") +
   theme_minimal() +
-  scale_color_tron()
+  scale_color_tron() +
+  theme(legend.position = "none")
 
 reg_plot <- ggplot(data = reg_vals_long, aes(x = maxit, y = value, color = name)) + 
   geom_line(lty = 4, lwd = 0.7) + 
@@ -278,7 +291,9 @@ reg_plot <- ggplot(data = reg_vals_long, aes(x = maxit, y = value, color = name)
   xlab("Maximum number of iterations") +
   ggtitle("Regression weight beta1") + 
   theme_minimal() +
-  scale_color_tron()
+  scale_color_tron() +
+  theme(legend.position = "bottom") + 
+  labs(color = "method")
 
 ggarrange(cor_plot, reg_plot, ncol = 1)
 ```
@@ -389,7 +404,11 @@ names(values) <- methods
 
 inner_list <- vector(mode = "list", length = length(names))
 names(inner_list) <- names
+```
 
+
+```{r, eval = F}
+# Again, we load as RDS as knitting would take forever
 for (method in methods){
   values[[method]] <- inner_list
 }
@@ -412,6 +431,8 @@ for (i in 1:n){
     values[[method]]$d_2[[i]] <- task_d_sequential(main, sub, method = method)
   }
 }
+
+saveRDS(values, sprintf("%s/data_files/iterations.rds"))
 ```
 
 # task f)
@@ -429,6 +450,8 @@ bias <- function(est, true){
 MSE <- function(var, bias){
   var + bias^2
 }
+
+values <- readRDS(sprintf("%s/data_files/iterations.rds", wd))
 
 bias_values_b0_pmm <- bias_values_b1_pmm <- mse_values_b1_pmm <- 
 bias_values_b0_norm <- bias_values_b1_norm <- mse_values_b1_norm <- 
@@ -468,7 +491,7 @@ for (name in names[2:length(names)]){
 
 We plotted the data: 
 
-```{r, fig.height = 8.12, fig.width = 7}
+```{r, fig.height = 8.5, fig.width = 7}
 beta_zeros <- list("pmm" = bias_values_b0_pmm, "norm" = bias_values_b0_norm, "midastouch" = bias_values_b0_midastouch, "cart" = bias_values_b0_cart)
 beta_ones <- list("pmm" = bias_values_b1_pmm, "norm" = bias_values_b1_norm, "midastouch" = bias_values_b1_midastouch, "cart" = bias_values_b1_cart)
 mse <- list("pmm" = mse_values_b1_pmm, "norm" = mse_values_b1_norm, "midastouch" = mse_values_b1_midastouch, "cart" = mse_values_b1_cart)
@@ -495,10 +518,10 @@ ggplot(bias_data, aes(x = task, y = value, fill = method)) +
              strip.position = "left", 
              labeller = as_labeller(c(beta0 = "Bias beta_0", beta1 = "Bias beta_1", mse = "MSE"))) +
   scale_fill_tron() +
-  xlab("Task") + 
+  xlab("Part") + 
   ylab(NULL) +
   theme_minimal() + 
-  theme(strip.placement = "outside",legend.position = "none")
+  theme(strip.placement = "outside",legend.position = "bottom")
 ```
 
 # task g)
